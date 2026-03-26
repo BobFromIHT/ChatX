@@ -1,12 +1,5 @@
-.vs/
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-ChatX/bin/
-ChatX/obj/
-
-*.user
-*.suo
+*
+!.gitignore
+!ChatX/
+ChatX/*
+!ChatX/*.cs

@@ -10,6 +10,13 @@ namespace ChatX
     public partial class ChatX
     {
         private static float _nextMentionPingAllowedAt; // Rate limiter for mention notification audio.
+        private static readonly Dictionary<string, AudioClip> _mentionClipCache = new(StringComparer.OrdinalIgnoreCase);
+        private static Type _cachedPlayerSoundType;
+        private static FieldInfo[] _cachedPlayerSoundClipFields;
+        private static Type _cachedButtonSoundType;
+        private static FieldInfo _cachedButtonSoundHoverField;
+        private static FieldInfo _cachedButtonSoundClickField;
+        private static string _lastMissingMentionClipName;
 
         internal static void TryPlayMentionPingThrottled(float minInterval = 0.25f)
 
@@ -43,15 +50,103 @@ namespace ChatX
 
         private static float GetMentionVolume() => Mathf.Clamp01(mentionPingVolume?.Value ?? 1f);
 
+        private static FieldInfo[] GetPlayerSoundClipFields(object playerSound)
+
+        {
+
+            if (playerSound == null) return Array.Empty<FieldInfo>();
+
+            var type = playerSound.GetType();
+
+            if (_cachedPlayerSoundType == type && _cachedPlayerSoundClipFields != null)
+
+                return _cachedPlayerSoundClipFields;
+
+            _cachedPlayerSoundType = type;
+
+            var fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+            var clipFields = new List<FieldInfo>(fields.Length);
+
+            foreach (var field in fields)
+
+            {
+
+                if (field.FieldType == typeof(AudioClip))
+
+                {
+
+                    clipFields.Add(field);
+
+                    continue;
+
+                }
+
+                if (field.FieldType.IsArray && field.FieldType.GetElementType() == typeof(AudioClip))
+
+                    clipFields.Add(field);
+
+            }
+
+            _cachedPlayerSoundClipFields = clipFields.ToArray();
+
+            return _cachedPlayerSoundClipFields;
+
+        }
+
+        private static void CacheButtonSoundFields(ButtonSound buttonSound)
+
+        {
+
+            if (buttonSound == null) return;
+
+            var type = buttonSound.GetType();
+
+            if (_cachedButtonSoundType == type) return;
+
+            _cachedButtonSoundType = type;
+
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+
+            _cachedButtonSoundHoverField = type.GetField("_hoverSoundClip", flags);
+
+            _cachedButtonSoundClickField = type.GetField("_clickSoundClip", flags);
+
+        }
+
         // Resolve mention audio by searching loaded clips, player fields, UI sounds, and Resources as a last resort.
 
         private static AudioClip FindAudioClipByName(string clipName)
 
         {
 
+            AudioClip CacheHit(AudioClip clip)
+
+            {
+
+                if (clip != null)
+
+                    _mentionClipCache[clipName] = clip;
+
+                return clip;
+
+            }
+
             if (string.IsNullOrWhiteSpace(clipName)) return null;
 
             clipName = clipName.Trim();
+
+            if (_mentionClipCache.TryGetValue(clipName, out var cached))
+
+            {
+
+                if (cached != null)
+
+                    return cached;
+
+                _mentionClipCache.Remove(clipName);
+
+            }
 
             try
 
@@ -63,7 +158,7 @@ namespace ChatX
 
                     if (clip != null && clip.name.Equals(clipName, StringComparison.OrdinalIgnoreCase))
 
-                        return clip;
+                        return CacheHit(clip);
 
                 }
 
@@ -81,7 +176,7 @@ namespace ChatX
 
             if (loaded != null)
 
-                return loaded;
+                return CacheHit(loaded);
 
             var playerSound = Player._mainPlayer?._pSound;
 
@@ -89,7 +184,7 @@ namespace ChatX
 
             {
 
-                var fields = playerSound.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var fields = GetPlayerSoundClipFields(playerSound);
 
                 foreach (var field in fields)
 
@@ -101,7 +196,7 @@ namespace ChatX
 
                         if (field.GetValue(playerSound) is AudioClip single && single != null && single.name.Equals(clipName, StringComparison.OrdinalIgnoreCase))
 
-                            return single;
+                            return CacheHit(single);
 
                     }
 
@@ -117,7 +212,7 @@ namespace ChatX
 
                                 if (clip != null && clip.name.Equals(clipName, StringComparison.OrdinalIgnoreCase))
 
-                                    return clip;
+                                    return CacheHit(clip);
 
                         }
 
@@ -133,7 +228,7 @@ namespace ChatX
 
                 if (src != null && src.clip != null && src.clip.name.Equals(clipName, StringComparison.OrdinalIgnoreCase))
 
-                    return src.clip;
+                    return CacheHit(src.clip);
 
             }
 
@@ -149,19 +244,19 @@ namespace ChatX
 
                     if (btn == null) continue;
 
-                    var type = btn.GetType();
+                    CacheButtonSoundFields(btn);
 
-                    var hover = type.GetField("_hoverSoundClip", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)?.GetValue(btn) as AudioClip;
+                    var hover = _cachedButtonSoundHoverField?.GetValue(btn) as AudioClip;
 
                     if (hover != null && hover.name.Equals(clipName, StringComparison.OrdinalIgnoreCase))
 
-                        return hover;
+                        return CacheHit(hover);
 
-                    var click = type.GetField("_clickSoundClip", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)?.GetValue(btn) as AudioClip;
+                    var click = _cachedButtonSoundClickField?.GetValue(btn) as AudioClip;
 
                     if (click != null && click.name.Equals(clipName, StringComparison.OrdinalIgnoreCase))
 
-                        return click;
+                        return CacheHit(click);
 
                 }
 
@@ -241,13 +336,17 @@ namespace ChatX
 
         {
 
-            _mentionAudioClip = null;
-
             if (mentionPing == null || mentionPing.Value != true) return;
 
             var clipName = mentionPingClip?.Value?.Trim();
 
             if (string.IsNullOrEmpty(clipName)) return;
+
+            if (_mentionAudioClip != null && ClipMatches(_mentionAudioClip, clipName))
+
+                return;
+
+            _mentionAudioClip = null;
 
             var clip = FindAudioClipByName(clipName);
 
@@ -255,7 +354,11 @@ namespace ChatX
 
             {
 
-                Log?.LogWarning($"ChatX mention clip '{clipName}' was not found among loaded audio clips.");
+                if (!string.Equals(_lastMissingMentionClipName, clipName, StringComparison.OrdinalIgnoreCase))
+
+                    Log?.LogWarning($"ChatX mention clip '{clipName}' was not found among loaded audio clips.");
+
+                _lastMissingMentionClipName = clipName;
 
                 return;
 
@@ -263,7 +366,35 @@ namespace ChatX
 
             _mentionAudioClip = clip;
 
+            _mentionClipCache[clipName] = clip;
+
+            _lastMissingMentionClipName = null;
+
             Log?.LogInfo($"ChatX mention clip set to '{_mentionAudioClip.name}'.");
+
+        }
+
+        internal static void ResetMentionRuntimeState()
+
+        {
+
+            _nextMentionPingAllowedAt = 0f;
+
+            _mentionAudioClip = null;
+
+            _mentionClipCache.Clear();
+
+            _cachedPlayerSoundType = null;
+
+            _cachedPlayerSoundClipFields = null;
+
+            _cachedButtonSoundType = null;
+
+            _cachedButtonSoundHoverField = null;
+
+            _cachedButtonSoundClickField = null;
+
+            _lastMissingMentionClipName = null;
 
         }
 
@@ -478,6 +609,37 @@ namespace ChatX
                 parts.Add(channelPrefix);
             return parts.Count == 0 ? string.Empty : string.Join(" ", parts) + " ";
         }
+        public static string BuildOocBadge()
+        {
+            return "<color=yellow>[</color><color=#A7FC00>OOC</color><color=yellow>]</color>";
+        }
+        public static string ExtractRenderedOocBadge(ref string message)
+        {
+            if (string.IsNullOrEmpty(message)) return string.Empty;
+            const string bodyMarker = "</color>: <color=";
+            int markerIndex = message.IndexOf(bodyMarker, StringComparison.OrdinalIgnoreCase);
+            if (markerIndex < 0) return string.Empty;
+            int bodyColorStart = markerIndex + bodyMarker.Length;
+            int bodyOpenTagEnd = message.IndexOf('>', bodyColorStart);
+            if (bodyOpenTagEnd < 0) return string.Empty;
+            int bodyStart = bodyOpenTagEnd + 1;
+            if (message.Length - bodyStart < OocPrefix.Length) return string.Empty;
+            if (string.CompareOrdinal(message, bodyStart, OocPrefix, 0, OocPrefix.Length) != 0)
+                return string.Empty;
+            message = message.Remove(bodyStart, OocPrefix.Length);
+            return BuildOocBadge();
+        }
+        public static string CombinePrefixSegments(string prefix, string badge)
+        {
+            bool hasPrefix = !string.IsNullOrWhiteSpace(prefix);
+            bool hasBadge = !string.IsNullOrWhiteSpace(badge);
+            if (!hasPrefix && !hasBadge) return string.Empty;
+            prefix = hasPrefix ? prefix.TrimEnd() : string.Empty;
+            badge = hasBadge ? badge.Trim() : string.Empty;
+            if (!hasPrefix) return badge + " ";
+            if (!hasBadge) return prefix.EndsWith(" ", StringComparison.Ordinal) ? prefix : prefix + " ";
+            return prefix + " " + badge + " ";
+        }
         // Detect either plain "(G) " / "(P) " / "(Z) " or colored "<color=...>(G|P|Z)</color> "
         public static bool LooksPrefixed(string msg)
         {
@@ -589,7 +751,7 @@ namespace ChatX
         {
             // Walk the rendered string, underlining safe occurrences of the player's nickname without disturbing existing tags.
             mentionDetected = false;
-            if (!mentionUnderline.Value) return message;
+            if (mentionUnderline?.Value != true) return message;
             if (string.IsNullOrEmpty(message)) return message;
             var nick = GetLocalPlayerNickname();
             if (string.IsNullOrEmpty(nick)) return message;

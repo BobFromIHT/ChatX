@@ -4,12 +4,12 @@ using BepInEx.Configuration;
 using BepInEx.Logging;
 using Nessie.ATLYSS.EasySettings;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection.Emit;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.UI;
 using TMPro;
+using UnityEngine.EventSystems;
 using static ChatBehaviour;
 using System.Reflection;
 using System.Text;
@@ -44,6 +44,13 @@ namespace ChatX
         internal static AudioClip _mentionAudioClip;
         internal static ManualLogSource Log;
         private static bool _chatHidden; // Tracks whether the chat is hidden via the Home toggle.
+        private static bool _settingsRegistered;
+        private const string SettingsTabName = "Chat";
+        private static readonly MethodInfo GetOrAddCustomTabMethod = typeof(Settings).GetMethod("GetOrAddCustomTab", BindingFlags.Public | BindingFlags.Static, null, [typeof(string)], null);
+        private static readonly MethodInfo GetMaxMessageLengthMethod = AccessTools.Method(typeof(ChatX), nameof(GetMaxMessageLength));
+        private static readonly MethodInfo StringLengthGetter = AccessTools.PropertyGetter(typeof(string), nameof(string.Length));
+        private static bool _loggedMissingCustomTabApi;
+        private static bool _loggedMissingChatInputField;
         public enum MentionClip
         {
             LexiconBell,
@@ -98,6 +105,26 @@ namespace ChatX
             {
                 if (Ui != null) Ui.DeactivateInputField();
                 else if (Tmp != null) Tmp.DeactivateInputField();
+            }
+
+            public void Activate()
+            {
+                if (Ui != null)
+                {
+                    Ui.Select();
+                    Ui.ActivateInputField();
+                }
+                else if (Tmp != null)
+                {
+                    Tmp.Select();
+                    Tmp.ActivateInputField();
+                }
+            }
+
+            public void SetText(string value)
+            {
+                if (Ui != null) Ui.text = value ?? string.Empty;
+                else if (Tmp != null) Tmp.text = value ?? string.Empty;
             }
 
             public void AddListeners(UnityAction<string> onValueChanged, UnityAction<string> onEndEdit)
@@ -157,6 +184,13 @@ namespace ChatX
                 _chatInputField = typeof(ChatBehaviourAssets).GetField("_chatInput", flags);
                 if (_chatInputField != null && !IsSupportedInputType(_chatInputField.FieldType))
                     _chatInputField = null;
+
+                if (_chatInputField == null && !_loggedMissingChatInputField)
+                {
+                    _loggedMissingChatInputField = true;
+                    Log?.LogWarning("ChatX could not resolve ChatBehaviourAssets._chatInput. Chat input-dependent features will stay disabled.");
+                }
+
                 return _chatInputField;
             }
 
@@ -175,17 +209,36 @@ namespace ChatX
             var harmony = new Harmony(MyPluginInfo.PLUGIN_GUID);
             harmony.PatchAll();
             Settings.OnInitialized.AddListener(AddSettings);
-            Settings.OnApplySettings.AddListener(() =>
-            {
-                Config.Save();
-                ChatInputCharacterLimiter.ApplyCharacterLimit();
-                ChatWindowResizer.ApplyAll();
-            });
+            Settings.OnApplySettings.AddListener(OnSettingsApplied);
             Logger.LogInfo($"{MyPluginInfo.PLUGIN_GUID} loaded!");
+        }
+
+        private void OnDestroy()
+        {
+            Settings.OnInitialized.RemoveListener(AddSettings);
+            Settings.OnApplySettings.RemoveListener(OnSettingsApplied);
+
+            if (chatTallWindow != null) chatTallWindow.SettingChanged -= OnChatTallWindowChanged;
+            if (transparentScrollbar != null) transparentScrollbar.SettingChanged -= OnTransparentScrollbarChanged;
+            if (mentionPing != null) mentionPing.SettingChanged -= OnMentionPingChanged;
+            if (mentionPingClipEnum != null) mentionPingClipEnum.SettingChanged -= OnMentionPingClipChanged;
+            if (mentionPingVolume != null) mentionPingVolume.SettingChanged -= OnMentionPingVolumeChanged;
+
+            _settingsRegistered = false;
+            _chatHidden = false;
+            _loggedMissingCustomTabApi = false;
+            _loggedMissingChatInputField = false;
+            ResetUiRuntimeState();
+            ResetMentionRuntimeState();
+            ResetOutgoingChatRuntimeState();
+            ResetLinkPromptRuntimeState();
+            ChatInputCharacterLimiter.ResetCounter();
         }
 
         private void Update()
         {
+            if (PollLinkPromptHotkeys())
+                return;
             TryHandleHotkeys();
         }
         private static string ClipFromEnum(MentionClip e) => ClipNames[(int)e];
@@ -221,25 +274,22 @@ namespace ChatX
             mentionPingVolume = B("Volume", 0.5f, "Volume for the ping sound",
                                new AcceptableValueRange<float>(0f, 1f));
             transparentScrollbar = B("Transparent Scrollbar", false, "Hide the chat scrollbar while keeping it functional.");
-            chatTallWindow.SettingChanged += (_, __) => ChatWindowResizer.ApplyAll();
-            transparentScrollbar.SettingChanged += (_, __) => ApplyOpacityCap(ChatBehaviourAssets._current, force: true);
-            mentionPing.SettingChanged += (_, __) => ReloadMentionClip();
-            mentionPingClipEnum.SettingChanged += (_, __) =>
-            {
-                // keep string in sync with enum selection
-                var desired = ClipFromEnum(mentionPingClipEnum.Value);
-                if (mentionPingClip.Value != desired)
-                    mentionPingClip.Value = desired;
-                ReloadMentionClip();
-                TryPlayMentionPingThrottled(0.5f);
-            };
+            chatTallWindow.SettingChanged += OnChatTallWindowChanged;
+            transparentScrollbar.SettingChanged += OnTransparentScrollbarChanged;
+            mentionPing.SettingChanged += OnMentionPingChanged;
+            mentionPingClipEnum.SettingChanged += OnMentionPingClipChanged;
             // one-time migration from old string to enum at startup
             mentionPingClipEnum.Value = EnumFromClip(mentionPingClip.Value);
-            mentionPingVolume.SettingChanged += (_, __) => TryPlayMentionPingThrottled(1f);
+            mentionPingVolume.SettingChanged += OnMentionPingVolumeChanged;
         }
         private void AddSettings()
         {
-            var tab = Settings.ModTab;
+            if (_settingsRegistered)
+                return;
+
+            _settingsRegistered = true;
+
+            var tab = ResolveSettingsTab();
             void T(string label, ConfigEntry<bool> e) => tab.AddToggle(label, e);
             void S(string label, ConfigEntry<float> e) => tab.AddAdvancedSlider(label, e);
             void D<T>(string label, ConfigEntry<T> e) where T : Enum => tab.AddDropdown(label, e);
@@ -265,7 +315,141 @@ namespace ChatX
             tab.AddHeader("Both Host + Client");
             T("Message Limit 125/500", messageLimit);
         }
-        public static int GetMaxMessageLength() => messageLimit.Value ? 500 : 125;
+
+        private static SettingsTab ResolveSettingsTab()
+        {
+            try
+            {
+                if (GetOrAddCustomTabMethod?.Invoke(null, [SettingsTabName]) is SettingsTab tab)
+                    return tab;
+            }
+            catch (TargetInvocationException ex)
+            {
+                Log?.LogWarning($"ChatX failed to create custom settings tab '{SettingsTabName}': {ex.InnerException?.Message ?? ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                Log?.LogWarning($"ChatX failed to resolve custom settings tab '{SettingsTabName}': {ex.Message}");
+            }
+
+            if (GetOrAddCustomTabMethod == null && !_loggedMissingCustomTabApi)
+            {
+                _loggedMissingCustomTabApi = true;
+                Log?.LogWarning("ChatX did not find EasySettings.GetOrAddCustomTab. Falling back to the default Mods tab.");
+            }
+
+            return Settings.ModTab;
+        }
+
+        private void OnSettingsApplied()
+        {
+            Config.Save();
+            ChatInputCharacterLimiter.ApplyCharacterLimit();
+            ChatWindowResizer.ApplyAll();
+        }
+
+        private static void OnChatTallWindowChanged(object _, EventArgs __) => ChatWindowResizer.ApplyAll();
+
+        private static void OnTransparentScrollbarChanged(object _, EventArgs __) => ApplyOpacityCap(ChatBehaviourAssets._current, force: true);
+
+        private static void OnMentionPingChanged(object _, EventArgs __) => ReloadMentionClip();
+
+        private static void OnMentionPingClipChanged(object _, EventArgs __)
+        {
+            var desired = ClipFromEnum(mentionPingClipEnum.Value);
+            if (mentionPingClip.Value != desired)
+                mentionPingClip.Value = desired;
+
+            ReloadMentionClip();
+            TryPlayMentionPingThrottled(0.5f);
+        }
+
+        private static void OnMentionPingVolumeChanged(object _, EventArgs __) => TryPlayMentionPingThrottled(1f);
+
+        private static IEnumerable<CodeInstruction> ReplaceMethodCalls(IEnumerable<CodeInstruction> instructions, MethodInfo source, MethodInfo target, int expectedMatches, string patchName)
+        {
+            var list = new List<CodeInstruction>(instructions);
+            if (source == null || target == null)
+            {
+                Log?.LogWarning($"ChatX skipped {patchName}; required method references were missing.");
+                return list;
+            }
+
+            var matches = new List<int>();
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (list[i].Calls(source))
+                    matches.Add(i);
+            }
+
+            if (matches.Count != expectedMatches)
+            {
+                Log?.LogWarning($"ChatX skipped {patchName}; expected {expectedMatches} call(s) to {source.Name}, found {matches.Count}.");
+                return list;
+            }
+
+            foreach (var index in matches)
+            {
+                list[index].opcode = OpCodes.Call;
+                list[index].operand = target;
+            }
+
+            return list;
+        }
+
+        private static IEnumerable<CodeInstruction> ReplaceMaxLengthGuards(IEnumerable<CodeInstruction> instructions, int expectedMatches, string patchName)
+        {
+            var list = new List<CodeInstruction>(instructions);
+            if (GetMaxMessageLengthMethod == null || StringLengthGetter == null)
+            {
+                Log?.LogWarning($"ChatX skipped {patchName}; max-length reflection targets were missing.");
+                return list;
+            }
+
+            var matches = new List<int>();
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (!IsIntegerLoad(list[i], 125))
+                    continue;
+
+                int previous = FindPreviousMeaningfulInstruction(list, i - 1);
+                if (previous >= 0 && list[previous].Calls(StringLengthGetter))
+                    matches.Add(i);
+            }
+
+            if (matches.Count != expectedMatches)
+            {
+                Log?.LogWarning($"ChatX skipped {patchName}; expected {expectedMatches} length guard(s), found {matches.Count}.");
+                return list;
+            }
+
+            foreach (var index in matches)
+            {
+                list[index].opcode = OpCodes.Call;
+                list[index].operand = GetMaxMessageLengthMethod;
+            }
+
+            return list;
+        }
+
+        private static bool IsIntegerLoad(CodeInstruction instruction, int value)
+        {
+            return (instruction.opcode == OpCodes.Ldc_I4_S && instruction.operand is sbyte shortValue && shortValue == value)
+                || (instruction.opcode == OpCodes.Ldc_I4 && instruction.operand is int intValue && intValue == value);
+        }
+
+        private static int FindPreviousMeaningfulInstruction(IList<CodeInstruction> instructions, int startIndex)
+        {
+            for (int i = startIndex; i >= 0; i--)
+            {
+                if (instructions[i].opcode != OpCodes.Nop)
+                    return i;
+            }
+
+            return -1;
+        }
+
+        public static int GetMaxMessageLength() => messageLimit?.Value == true ? 500 : 125;
         // -------------------------
         // Clear Chat and Game Feed
         // -------------------------
@@ -376,26 +560,32 @@ namespace ChatX
             [HarmonyPrefix, HarmonyPriority(Priority.First)]
             static bool Prefix(ref string __0)
             {
-                if (ChatX.blockChat.Value) return false;
+                if (ChatX.blockChat?.Value == true) return false;
+                __0 = ChatX.ProtectChatLinks(__0, out var protectedLinks);
+                string oocBadge = ChatX.ExtractRenderedOocBadge(ref __0);
                 // 1) *italic* formatting (if enabled)
                 if (ChatX.asteriskItalic?.Value == true)
                     __0 = ChatX.ApplyAsteriskFormatting(__0);
-                // 2) Channel prefix (only if enabled, not already present, and channel detected)
-                if (ChatX.chatPrefix.Value && !ChatX.LooksPrefixed(__0)
+                // 2) Channel prefix/OOC badge before the speaker header
+                string prefix = string.Empty;
+                if (ChatX.chatPrefix?.Value == true && !ChatX.LooksPrefixed(__0)
                     && ChatX.TryExtractChatChannel(__0, out var ch))
                 {
-                    var prefix = ChatX.BuildMessagePrefix(ch);
-                    if (!string.IsNullOrEmpty(prefix))
-                        __0 = ChatX.InsertPrefix(__0, prefix);
+                    prefix = ChatX.BuildMessagePrefix(ch);
                 }
+                string combinedPrefix = ChatX.CombinePrefixSegments(prefix, oocBadge);
+                if (!string.IsNullOrEmpty(combinedPrefix))
+                    __0 = ChatX.InsertPrefix(__0, combinedPrefix);
                 // 3) Mentions last (underline + optional ping)
                 ChatX.ApplyMentionEffects(ref __0);
+                __0 = ChatX.RestoreProtectedChatLinks(__0, protectedLinks);
                 return true;
             }
             [HarmonyPostfix, HarmonyPriority(Priority.Last)]
             static void Postfix(ChatBehaviour __instance)
             {
                 if (!__instance) return;
+                ChatX.EnsureChatLinkUi(__instance._chatAssets);
                 ChatX.ApplyOpacityCap(__instance._chatAssets);
             }
         }
@@ -409,7 +599,7 @@ namespace ChatX
             [HarmonyPrefix, HarmonyPriority(Priority.First)]
             static bool Prefix()
             {
-                return !ChatX.blockGameFeed.Value;
+                return ChatX.blockGameFeed?.Value != true;
             }
         }
         // Route dungeon key system messages into the game feed
@@ -421,16 +611,7 @@ namespace ChatX
 
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
             {
-                foreach (var code in instructions)
-                {
-                    if (code.Calls(NewChatMessage))
-                    {
-                        code.opcode = OpCodes.Call;
-                        code.operand = PushGameFeed;
-                    }
-
-                    yield return code;
-                }
+                return ReplaceMethodCalls(instructions, NewChatMessage, PushGameFeed, expectedMatches: 2, patchName: "PatternInstanceManager.On_DungeonKeyChange reroute");
             }
         }
 
@@ -442,16 +623,7 @@ namespace ChatX
 
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
             {
-                foreach (var code in instructions)
-                {
-                    if (code.Calls(NewChatMessage))
-                    {
-                        code.opcode = OpCodes.Call;
-                        code.operand = PushGameFeed;
-                    }
-
-                    yield return code;
-                }
+                return ReplaceMethodCalls(instructions, NewChatMessage, PushGameFeed, expectedMatches: 1, patchName: "PlayerQuesting.Accept_Quest reroute");
             }
         }
 
@@ -463,16 +635,7 @@ namespace ChatX
 
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
             {
-                foreach (var code in instructions)
-                {
-                    if (code.Calls(NewChatMessage))
-                    {
-                        code.opcode = OpCodes.Call;
-                        code.operand = RouteAttune;
-                    }
-
-                    yield return code;
-                }
+                return ReplaceMethodCalls(instructions, NewChatMessage, RouteAttune, expectedMatches: 1, patchName: "WorldPortalWaypoint.OnTriggerEnter reroute");
             }
         }
 
@@ -485,16 +648,7 @@ namespace ChatX
 
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
             {
-                foreach (var code in instructions)
-                {
-                    if (code.Calls(TargetReceive))
-                    {
-                        code.opcode = OpCodes.Call;
-                        code.operand = RouteTarget;
-                    }
-
-                    yield return code;
-                }
+                return ReplaceMethodCalls(instructions, TargetReceive, RouteTarget, expectedMatches: 1, patchName: "NetTrigger.OnTriggerStay reroute");
             }
         }
 
@@ -536,18 +690,14 @@ namespace ChatX
                 ApplyOpacityCap(__instance._chatAssets);
             }
         }
-        [HarmonyPatch(typeof(ChatBehaviour))]
+        [HarmonyPatch(typeof(ChatBehaviour), "Client_HandleChatboxUpdate")]
         static class ChatBehaviour_HandleChatControls_PreOpen
         {
-            // The compiler-generated method name can shift between builds; match by substring instead of hard-coding.
-            static MethodBase TargetMethod() =>
-                AccessTools.GetDeclaredMethods(typeof(ChatBehaviour))
-                           .FirstOrDefault(m => m.Name.Contains("Handle_ChatBoxControls"));
-
+            [HarmonyPrefix, HarmonyPriority(Priority.First)]
             static void Prefix(ChatBehaviour __instance)
             {
                 if (!__instance) return;
-                if (!ReferenceEquals(ChatBehaviour._current, __instance))
+                if (!__instance.isLocalPlayer || !ReferenceEquals(ChatBehaviour._current, __instance))
                     return;
 
                 bool enterPressed = Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter);
@@ -566,7 +716,6 @@ namespace ChatX
 
                 pendingRestore = true;
                 ResetChatFocus();
-
             }
         }
 
@@ -657,7 +806,8 @@ namespace ChatX
 
                 if (_counterRect == null)
                     return;
-                _counterRect.SetParent(host, false);
+                if (!ReferenceEquals(_counterRect.parent, host))
+                    _counterRect.SetParent(host, false);
                 _counterRect.SetAsLastSibling();
                 float templateHeight = 0f;
                 float templateWidth = 0f;
@@ -709,6 +859,10 @@ namespace ChatX
             }
             public static void ResetCounter()
             {
+                var counterObject = (_charCounter != null && !_charCounter.Equals(null))
+                    ? _charCounter.gameObject
+                    : (_charCounterTMP != null && !_charCounterTMP.Equals(null) ? _charCounterTMP.gameObject : null);
+
                 if (_trackedInput != null)
                 {
                     if (_trackedInput.Component != null)
@@ -720,6 +874,9 @@ namespace ChatX
                 _charCounter = null;
                 _charCounterTMP = null;
                 _counterRect = null;
+
+                if (counterObject != null)
+                    UnityEngine.Object.Destroy(counterObject);
             }
 
             private static void EnsureCounterComponent(RectTransform host, ChatInputHandle input)
@@ -894,6 +1051,7 @@ namespace ChatX
             static void Postfix(ChatBehaviourAssets __instance)
             {
                 ChatWindowResizer.Register(__instance);
+                ChatX.EnsureChatLinkUi(__instance);
                 var input = ChatInputResolver.TryGet(__instance);
                 if (input != null)
                     input.CharacterLimit = ChatX.GetMaxMessageLength();
@@ -914,6 +1072,52 @@ namespace ChatX
             {
                 ChatInputCharacterLimiter.ApplyCharacterLimit();
                 ChatWindowResizer.ApplyAll();
+                ChatX.EnsureChatLinkUi(ChatBehaviourAssets._current);
+            }
+        }
+        // -------------------------
+        // OOC preprocessing for outgoing chat
+        // -------------------------
+        [HarmonyPatch(typeof(ChatBehaviour), nameof(ChatBehaviour.Send_ChatMessage))]
+        static class ChatBehaviour_SendMessage_Ooc
+        {
+            [HarmonyPrefix, HarmonyPriority(Priority.First)]
+            static bool Prefix(ChatBehaviour __instance, ref string __0, out string __state)
+            {
+                __state = null;
+                if (!ChatX.ShouldInterceptOutgoingChat(__0))
+                    return true;
+
+                if (ChatX.TryHandleLocalOocToggle(__instance, __0))
+                    return false;
+
+                var status = ChatX.PrepareOutgoingChatMessage(__0, out var transformedMessage, out var errorPrompt);
+                if (status == OutgoingChatPreparationStatus.Suppressed)
+                {
+                    ChatX.FinalizeLocalChatCommand(__instance);
+                    return false;
+                }
+
+                if (status == OutgoingChatPreparationStatus.Invalid)
+                {
+                    ChatX.ShowOutgoingChatValidationError(__instance, errorPrompt, __0);
+                    return false;
+                }
+
+                if (status == OutgoingChatPreparationStatus.Transformed)
+                {
+                    __state = __0;
+                    __0 = transformedMessage;
+                }
+
+                return true;
+            }
+
+            [HarmonyPostfix]
+            static void Postfix(ChatBehaviour __instance, string __state)
+            {
+                if (!string.IsNullOrEmpty(__state))
+                    ChatX.RestoreLastTypedChatMessage(__instance, __state);
             }
         }
         // -------------------------
@@ -924,16 +1128,7 @@ namespace ChatX
         {
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instrs)
             {
-                var list = new List<CodeInstruction>(instrs);
-                var getMax = AccessTools.Method(typeof(ChatX), nameof(ChatX.GetMaxMessageLength));
-                for (int i = 0; i < list.Count; i++)
-                {
-                    if (list[i].opcode == OpCodes.Ldc_I4_S && (sbyte)list[i].operand == 125)
-                    {
-                        list[i] = new CodeInstruction(OpCodes.Call, getMax);
-                    }
-                }
-                return list.AsEnumerable();
+                return ReplaceMaxLengthGuards(instrs, expectedMatches: 1, patchName: "ChatBehaviour.Send_ChatMessage max length");
             }
         }
         [HarmonyPatch(typeof(ChatBehaviour), "UserCode_Cmd_SendChatMessage__String__ChatChannel")]
@@ -941,17 +1136,7 @@ namespace ChatX
         {
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instrs)
             {
-                var list = new List<CodeInstruction>(instrs);
-                var getMax = AccessTools.Method(typeof(ChatX), nameof(ChatX.GetMaxMessageLength));
-                for (int i = 0; i < list.Count; i++)
-                {
-                    if ((list[i].opcode == OpCodes.Ldc_I4_S && (sbyte)list[i].operand == 125) ||
-                        (list[i].opcode == OpCodes.Ldc_I4 && (int)list[i].operand == 125))
-                    {
-                        list[i] = new CodeInstruction(OpCodes.Call, getMax);
-                    }
-                }
-                return list.AsEnumerable();
+                return ReplaceMaxLengthGuards(instrs, expectedMatches: 1, patchName: "ChatBehaviour.UserCode_Cmd_SendChatMessage__String__ChatChannel max length");
             }
         }
     }

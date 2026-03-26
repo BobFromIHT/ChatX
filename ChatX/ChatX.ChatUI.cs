@@ -14,6 +14,7 @@ namespace ChatX
         private static bool pendingRestore;
         private static bool _chatWasHidden;
         private static readonly FieldInfo ChatInputBufferField = typeof(ChatBehaviour).GetField("_inputBuffer", BindingFlags.Instance | BindingFlags.NonPublic);
+        private static bool _loggedMissingInputBufferField;
         internal sealed class ChatScrollbarState
         {
             public CanvasGroup Scrollbar;
@@ -150,6 +151,11 @@ namespace ChatX
                 {
                 }
             }
+            else if (!_loggedMissingInputBufferField)
+            {
+                _loggedMissingInputBufferField = true;
+                Log?.LogWarning("ChatX could not resolve ChatBehaviour._inputBuffer. Hidden-chat focus restoration may be limited.");
+            }
 
             chat.Display_Chat(true);
             chat._textFadeTimer = Mathf.Max(chat._textFadeTimer, 1f);
@@ -164,6 +170,15 @@ namespace ChatX
                     general.interactable = true;
                 }
             }
+        }
+
+        internal static void ResetUiRuntimeState()
+        {
+            _dialogSuppressed = false;
+            pendingRestore = false;
+            _chatWasHidden = false;
+            _loggedMissingInputBufferField = false;
+            ChatWindowResizer.Reset();
         }
 
         private static void SyncChatVisibility(ChatBehaviourAssets assets, ChatScrollbarState state, bool chatHidden, bool allFaded)
@@ -285,6 +300,15 @@ namespace ChatX
             }
         }
 
+        private static bool HasExternalHudOverlay(ChatBehaviourAssets assets)
+        {
+            var triggerText = assets?._triggerMessageText;
+            return triggerText != null
+                && triggerText.enabled
+                && triggerText.gameObject.activeInHierarchy
+                && !string.IsNullOrWhiteSpace(triggerText.text);
+        }
+
         private static bool ShouldShowScrollbar(ChatScrollbarState state)
         {
             var scrollRect = state?.ScrollRect;
@@ -337,14 +361,14 @@ namespace ChatX
             //    Track the smallest value so the scrollbar matches the visible fade level.
 
             var textGroups = assets._chatTextGroups;
-            if (textGroups != null && !chatHidden)
+            if (textGroups != null)
             {
                 for (int i = 0; i < textGroups.Length; i++)
                 {
                     var cg = textGroups[i];
                     if (!cg) continue;
                     float prior = cg.alpha;
-                    float clamped = shouldRestore ? cap : Mathf.Min(prior, cap);
+                    float clamped = chatHidden ? 0f : shouldRestore ? cap : Mathf.Min(prior, cap);
                     if (force || shouldRestore || !Mathf.Approximately(prior, clamped))
                         cg.alpha = clamped;
                     UpdateEffectiveAlpha(ref effectiveAlpha, ref sawNonZeroAlpha, cg.alpha);
@@ -352,25 +376,26 @@ namespace ChatX
             }
 
             // 3) Clamp these container groups the same way (don't set them TO cap; Min them).
-            if (assets._chatboxTextGroup && !chatHidden)
+            if (assets._chatboxTextGroup)
             {
                 float prior = assets._chatboxTextGroup.alpha;
-                float clamped = shouldRestore ? cap : Mathf.Min(prior, cap);
+                float clamped = chatHidden ? 0f : shouldRestore ? cap : Mathf.Min(prior, cap);
                 if (force || shouldRestore || !Mathf.Approximately(prior, clamped))
                     assets._chatboxTextGroup.alpha = clamped;
                 UpdateEffectiveAlpha(ref effectiveAlpha, ref sawNonZeroAlpha, assets._chatboxTextGroup.alpha);
             }
 
-            if (assets._gameLogicGroup && !chatHidden)
+            if (assets._gameLogicGroup)
             {
                 float prior = assets._gameLogicGroup.alpha;
-                float clamped = shouldRestore ? cap : Mathf.Min(prior, cap);
+                float clamped = chatHidden ? 0f : shouldRestore ? cap : Mathf.Min(prior, cap);
                 if (force || shouldRestore || !Mathf.Approximately(prior, clamped))
                     assets._gameLogicGroup.alpha = clamped;
                 UpdateEffectiveAlpha(ref effectiveAlpha, ref sawNonZeroAlpha, assets._gameLogicGroup.alpha);
             }
 
             bool allFaded = chatHidden || !sawNonZeroAlpha;
+            bool externalOverlayVisible = HasExternalHudOverlay(assets);
             if (allFaded)
             {
                 effectiveAlpha = 0f;
@@ -382,7 +407,7 @@ namespace ChatX
 
             if (generalCanvas)
             {
-                float target = allFaded ? 0f : baseGeneralAlpha;
+                float target = externalOverlayVisible ? 1f : allFaded ? 0f : baseGeneralAlpha;
                 if (force || !Mathf.Approximately(generalCanvas.alpha, target))
                     generalCanvas.alpha = target;
                 bool allow = !allFaded;
@@ -789,6 +814,11 @@ namespace ChatX
             private static void Cleanup()
             {
                 _targets.RemoveAll(t => !t.Asset.TryGetTarget(out var assets) || assets == null);
+            }
+
+            public static void Reset()
+            {
+                _targets.Clear();
             }
         }
     }
