@@ -86,7 +86,6 @@ namespace ChatX
             public Component Component => Ui != null ? Ui : Tmp;
             public RectTransform RectTransform => Component != null ? Component.GetComponent<RectTransform>() : null;
             public bool IsFocused => Ui != null ? Ui.isFocused : Tmp != null && Tmp.isFocused;
-            public bool IsActiveAndEnabled => Ui != null ? Ui.isActiveAndEnabled : Tmp != null && Tmp.isActiveAndEnabled;
             public string Text => Ui != null ? Ui.text : Tmp != null ? Tmp.text : string.Empty;
             public int CharacterLimit
             {
@@ -97,9 +96,6 @@ namespace ChatX
                     else if (Tmp != null) Tmp.characterLimit = value;
                 }
             }
-
-            public Text UiTextComponent => Ui != null ? Ui.textComponent : null;
-            public TMP_Text TmpTextComponent => Tmp != null ? Tmp.textComponent : null;
 
             public void Deactivate()
             {
@@ -201,6 +197,39 @@ namespace ChatX
             }
 
         }
+
+        private static bool IsChatSubmitKeyPressed()
+        {
+            return Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter);
+        }
+
+        private static Transform FindDescendantTransformByName(Transform root, string name)
+        {
+            if (root == null || string.IsNullOrEmpty(name))
+                return null;
+
+            var queue = new Queue<Transform>();
+            queue.Enqueue(root);
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                if (current == null)
+                    continue;
+                if (current.name == name)
+                    return current;
+                for (int i = 0; i < current.childCount; i++)
+                    queue.Enqueue(current.GetChild(i));
+            }
+
+            return null;
+        }
+
+        private static T FindDescendantComponentByName<T>(Transform root, string name) where T : Component
+        {
+            var transform = FindDescendantTransformByName(root, name);
+            return transform != null ? transform.GetComponent<T>() : null;
+        }
+
         private void Awake()
         {
             // Wire up config, Harmony patches, and settings menu entries before the game finishes loading.
@@ -700,8 +729,7 @@ namespace ChatX
                 if (!__instance.isLocalPlayer || !ReferenceEquals(ChatBehaviour._current, __instance))
                     return;
 
-                bool enterPressed = Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter);
-                if (!enterPressed)
+                if (!IsChatSubmitKeyPressed())
                     return;
 
                 var assets = __instance._chatAssets;

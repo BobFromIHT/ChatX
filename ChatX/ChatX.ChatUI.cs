@@ -88,29 +88,13 @@ namespace ChatX
             if (!assets) return null;
             if (assets._chatboxTextGroup != null)
                 return assets._chatboxTextGroup.gameObject;
-            var fallback = FindChildObject(assets.transform, "_chatbox_textField");
+            var fallback = FindDescendantTransformByName(assets.transform, "_chatbox_textField");
             if (fallback != null)
-                return fallback;
+                return fallback.gameObject;
             var chatText = assets._chatText;
             return chatText != null ? chatText.gameObject : null;
         }
 
-        private static GameObject FindChildObject(Transform root, string name)
-        {
-            if (root == null || string.IsNullOrEmpty(name)) return null;
-            var queue = new Queue<Transform>();
-            queue.Enqueue(root);
-            while (queue.Count > 0)
-            {
-                var current = queue.Dequeue();
-                if (current == null) continue;
-                if (current.name == name)
-                    return current.gameObject;
-                for (int i = 0; i < current.childCount; i++)
-                    queue.Enqueue(current.GetChild(i));
-            }
-            return null;
-        }
         private static bool ShouldHoldChatForExternalUI()
         {
             var dialog = DialogManager._current;
@@ -522,17 +506,17 @@ namespace ChatX
             {
                 var chatScrollRect = assets._chatText ? assets._chatText.GetComponentInParent<ScrollRect>() : null;
                 var logicScrollRect = assets._gameLogicText ? assets._gameLogicText.GetComponentInParent<ScrollRect>() : null;
-                var chatContainer = FindRectTransform(assets.transform, "_chatbox_textField");
+                var chatContainer = FindDescendantComponentByName<RectTransform>(assets.transform, "_chatbox_textField");
                 var chatGroupRect = GetRect(assets._chatboxTextGroup);
                 var chatBackdrop = chatGroupRect != null && chatGroupRect.name == "_chatbox_backdrop"
                     ? chatGroupRect
-                    : (chatContainer != null ? FindRectTransform(chatContainer, "_chatbox_backdrop") : FindRectTransform(assets.transform, "_chatbox_backdrop"));
+                    : (chatContainer != null ? FindDescendantComponentByName<RectTransform>(chatContainer, "_chatbox_backdrop") : FindDescendantComponentByName<RectTransform>(assets.transform, "_chatbox_backdrop"));
                 if (chatBackdrop != null && chatGroupRect != null && ReferenceEquals(chatBackdrop, chatGroupRect))
                     chatBackdrop = null;
 
-                var chatMask = chatContainer != null ? FindRectTransform(chatContainer, "_chatbox_mask") : FindRectTransform(assets.transform, "_chatbox_mask");
+                var chatMask = chatContainer != null ? FindDescendantComponentByName<RectTransform>(chatContainer, "_chatbox_mask") : FindDescendantComponentByName<RectTransform>(assets.transform, "_chatbox_mask");
                 var channelDockSearchRoot = chatBackdrop ?? chatGroupRect ?? chatContainer ?? assets.transform;
-                var channelDock = FindRectTransform(channelDockSearchRoot, "_dolly_chatChannelDock");
+                var channelDock = FindDescendantComponentByName<RectTransform>(channelDockSearchRoot, "_dolly_chatChannelDock");
                 var inputRect = ChatInputResolver.TryGet(assets)?.RectTransform;
                 var chatTextRect = assets._chatText ? assets._chatText.GetComponent<RectTransform>() : null;
 
@@ -790,26 +774,6 @@ namespace ChatX
             }
 
             private static RectTransform GetRect(CanvasGroup group) => group?.GetComponent<RectTransform>();
-
-            private static RectTransform FindRectTransform(Transform root, string name)
-            {
-                if (root == null || string.IsNullOrEmpty(name)) return null;
-
-                var queue = new Queue<Transform>();
-                queue.Enqueue(root);
-                while (queue.Count > 0)
-                {
-                    var current = queue.Dequeue();
-                    if (current == null)
-                        continue;
-                    if (current.name == name && current is RectTransform rect)
-                        return rect;
-                    for (int i = 0; i < current.childCount; i++)
-                        queue.Enqueue(current.GetChild(i));
-                }
-
-                return null;
-            }
 
             private static void Cleanup()
             {

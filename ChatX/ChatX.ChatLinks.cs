@@ -97,7 +97,7 @@ namespace ChatX
                 return true;
             }
 
-            if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
+            if (IsChatSubmitKeyPressed())
             {
                 OpenPendingChatLink();
                 return true;
@@ -130,7 +130,7 @@ namespace ChatX
         internal static bool ShouldInterceptOutgoingChat(string rawMessage)
         {
             return NetworkClient.active
-                && Input.GetKeyDown(KeyCode.Return)
+                && IsChatSubmitKeyPressed()
                 && !string.IsNullOrWhiteSpace(rawMessage);
         }
 
