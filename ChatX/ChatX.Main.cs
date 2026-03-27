@@ -69,11 +69,14 @@ namespace ChatX
         {
             public readonly InputField Ui;
             public readonly TMP_InputField Tmp;
+            public readonly RectTransform RectTransform;
 
             public ChatInputHandle(InputField ui, TMP_InputField tmp)
             {
                 Ui = ui;
                 Tmp = tmp;
+                var component = ui != null ? (Component)ui : tmp;
+                RectTransform = component != null ? component.GetComponent<RectTransform>() : null;
             }
 
             public static ChatInputHandle From(object value)
@@ -84,7 +87,6 @@ namespace ChatX
             }
 
             public Component Component => Ui != null ? Ui : Tmp;
-            public RectTransform RectTransform => Component != null ? Component.GetComponent<RectTransform>() : null;
             public bool IsFocused => Ui != null ? Ui.isFocused : Tmp != null && Tmp.isFocused;
             public string Text => Ui != null ? Ui.text : Tmp != null ? Tmp.text : string.Empty;
             public int CharacterLimit
@@ -235,6 +237,7 @@ namespace ChatX
             // Wire up config, Harmony patches, and settings menu entries before the game finishes loading.
             InitConfig();
             Log = Logger;
+            ResetOutgoingChatRuntimeState();
             var harmony = new Harmony(MyPluginInfo.PLUGIN_GUID);
             harmony.PatchAll();
             Settings.OnInitialized.AddListener(AddSettings);
@@ -266,6 +269,7 @@ namespace ChatX
 
         private void Update()
         {
+            RefreshOutgoingChatRuntimeState();
             if (PollLinkPromptHotkeys())
                 return;
             TryHandleHotkeys();
@@ -868,8 +872,8 @@ namespace ChatX
                 SetCounterActive(show);
                 if (!show) { SetCounterText(string.Empty); return; }
                 int max = ChatX.GetMaxMessageLength();
-                int used = Mathf.Clamp(input.Text?.Length ?? 0, 0, max);
-                float t = max > 0 ? used / (float)max : 0f;
+                int used = Mathf.Max(0, ChatX.GetPendingOutgoingChatLength(input.Text));
+                float t = max > 0 ? Mathf.Clamp01(used / (float)max) : 0f;
                 SetCounterColor(Color.Lerp(CounterColorStart, CounterColorEnd, t));
                 SetCounterText((max - used).ToString());
             }

@@ -561,19 +561,22 @@ namespace ChatX
                 };
             }
 
-            private static IEnumerable<RectSnapshot> All(TargetGroup group)
-            {
-                yield return group.ChatContainer; yield return group.ChatBackdrop; yield return group.ChatMask;
-                yield return group.ChatGroup; yield return group.ChatScroll; yield return group.ChatViewport;
-                yield return group.ChatScrollbar; yield return group.ChatChannelDock; yield return group.ChatInput; yield return group.ChatText;
-                yield return group.LogicGroup; yield return group.LogicScroll; yield return group.LogicViewport;
-                yield return group.LogicScrollbar;
-            }
-
             private static void CaptureSnapshots(TargetGroup group, bool force = false)
             {
-                foreach (var snapshot in All(group))
-                    RefreshSnapshot(snapshot, force);
+                RefreshSnapshot(group.ChatContainer, force);
+                RefreshSnapshot(group.ChatBackdrop, force);
+                RefreshSnapshot(group.ChatMask, force);
+                RefreshSnapshot(group.ChatGroup, force);
+                RefreshSnapshot(group.ChatScroll, force);
+                RefreshSnapshot(group.ChatViewport, force);
+                RefreshSnapshot(group.ChatScrollbar, force);
+                RefreshSnapshot(group.ChatChannelDock, force);
+                RefreshSnapshot(group.ChatInput, force);
+                RefreshSnapshot(group.ChatText, force);
+                RefreshSnapshot(group.LogicGroup, force);
+                RefreshSnapshot(group.LogicScroll, force);
+                RefreshSnapshot(group.LogicViewport, force);
+                RefreshSnapshot(group.LogicScrollbar, force);
             }
 
             private static void Apply(TargetGroup group)
@@ -585,11 +588,19 @@ namespace ChatX
                 float inputOffset = tall ? ChatInputYOffset : 0f;
                 float textOffset = tall ? ChatTextYOffset : 0f;
 
-                foreach (var snapshot in new[] { group.ChatContainer, group.ChatBackdrop, group.ChatMask, group.ChatGroup, group.ChatScroll, group.ChatViewport, group.ChatScrollbar, group.ChatChannelDock })
-                    ApplySnapshot(snapshot, chatDelta);
+                ApplySnapshot(group.ChatContainer, chatDelta);
+                ApplySnapshot(group.ChatBackdrop, chatDelta);
+                ApplySnapshot(group.ChatMask, chatDelta);
+                ApplySnapshot(group.ChatGroup, chatDelta);
+                ApplySnapshot(group.ChatScroll, chatDelta);
+                ApplySnapshot(group.ChatViewport, chatDelta);
+                ApplySnapshot(group.ChatScrollbar, chatDelta);
+                ApplySnapshot(group.ChatChannelDock, chatDelta);
 
-                foreach (var snapshot in new[] { group.LogicGroup, group.LogicScroll, group.LogicViewport, group.LogicScrollbar })
-                    ApplySnapshot(snapshot, logicDelta);
+                ApplySnapshot(group.LogicGroup, logicDelta);
+                ApplySnapshot(group.LogicScroll, logicDelta);
+                ApplySnapshot(group.LogicViewport, logicDelta);
+                ApplySnapshot(group.LogicScrollbar, logicDelta);
 
                 if (tall)
                     ApplyTallOffsets(group);
@@ -629,17 +640,11 @@ namespace ChatX
 
             private static void ApplyTallOffsets(TargetGroup group)
             {
-                (RectSnapshot snapshot, float shift, float extra)[] operations =
-                {
-                    (group.ChatBackdrop, TallBackdropShiftDown, TallBackdropExtraHeight),
-                    (group.ChatMask, TallMaskShiftDown, TallMaskExtraHeight),
-                    (group.ChatScroll, TallScrollShiftDown, TallScrollExtraHeight),
-                    (group.ChatViewport, TallScrollShiftDown, TallViewportExtraHeight),
-                    (group.ChatScrollbar, TallScrollbarShiftDown, TallScrollbarExtraHeight),
-                };
-
-                foreach (var (snapshot, shift, extra) in operations)
-                    AdjustRect(snapshot, shift, extra);
+                AdjustRect(group.ChatBackdrop, TallBackdropShiftDown, TallBackdropExtraHeight);
+                AdjustRect(group.ChatMask, TallMaskShiftDown, TallMaskExtraHeight);
+                AdjustRect(group.ChatScroll, TallScrollShiftDown, TallScrollExtraHeight);
+                AdjustRect(group.ChatViewport, TallScrollShiftDown, TallViewportExtraHeight);
+                AdjustRect(group.ChatScrollbar, TallScrollbarShiftDown, TallScrollbarExtraHeight);
             }
 
             private static void AdjustRect(RectSnapshot snapshot, float shiftDown, float extraHeight)
