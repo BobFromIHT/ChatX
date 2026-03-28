@@ -1,5 +1,10 @@
 *
 !.gitignore
+!CHANGELOG.md
+!README.md
+!manifest.json
+!icon.png
+!LICENSE
 !ChatX/
 ChatX/*
 !ChatX/*.cs

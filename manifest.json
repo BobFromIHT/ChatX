@@ -1,0 +1,7 @@
+{
+    "name": "ChatX",
+    "version_number": "3.1.0",
+    "website_url": "https://github.com/BobFromIHT/ChatX",
+    "description": "Numerous Chat improvements and Quality of Life changes.",
+    "dependencies": ["Nessie-EasySettings-1.1.3","BepInEx-BepInExPack-5.4.2100"]
+}
