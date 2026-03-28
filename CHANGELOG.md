@@ -44,6 +44,8 @@ All notable changes to this project will be documented in this file.
 - Updated EasySettings integration.
 - Final release cleanup and documentation pass.
 
+---
+
 ## [2.0.1] - 2026-1-8
 
 ### Patched
@@ -58,11 +60,15 @@ All notable changes to this project will be documented in this file.
 
 - Updated to new version... thought I probably missed something idk shi @me
 
+---
+
 ## [1.9.2] - 2025-10-14
 
 ### Patched
 
 - Fixed chat transparency and input field
+
+---
 
 ## [1.9.1] - 2025-10-10
 
@@ -168,7 +174,7 @@ All notable changes to this project will be documented in this file.
 
 ## [1.4.0] - 2025-9-23  
 
-### Added 
+### Added
 
 - Chat prefix based on chat channel
 
@@ -180,7 +186,7 @@ All notable changes to this project will be documented in this file.
 
 ## [1.3.0] - 2025-9-13  
 
-### Added  
+### Added
 
 - Extends message limit to 500 characters by default
 
@@ -196,17 +202,17 @@ All notable changes to this project will be documented in this file.
 
 ## [1.1.0] - 2024-12-19  
 
-### Added  
+### Added
 
 - Changed the options to a chat override and a slider for opacity
 - Added a block chat feature
 
 ---
 
-## [1.0.0] - 2024-12-17 
+## [1.0.0] - 2024-12-17
 
 ### Added
 
-- It does the thing 
+- It does the thing
 
 ---
